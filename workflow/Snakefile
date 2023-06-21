@@ -1,84 +1,13 @@
-# parental_prefix = config['parental_genome']
-# genome_prefix = config['experiment_id']
+from utils import ExperimentTree
 
-# import pathlib
-# import os
-# sample_directory = pathlib.Path(f"../../resources/samples/Parental_Cloning_Experiment/{genome_prefix}")
-# sample_ids = set([fname.stem[:-5] for fname in sample_directory.glob('*.fq.gz')] + [fname.stem[:-2] for fname in sample_directory.glob('*.fq')])
-# print(sample_ids)
+# Digest the config and produce the dependency tree of all experiments
+tree = ExperimentTree(config)
 
-import pathlib
-
-samples_directory = pathlib.Path(config['samples_directory'])
-results = pathlib.Path('results')
-
-experiments = config['experiments']
-to_build = [k for k, v in experiments.items() if 'parent' in v]
-print(to_build)
-
-dependencies = {
-    experiment: {
-        "samples": experiments[experiment]['samples']
-    }
-    for experiment in to_build
-}
-for experiment, entry in dependencies.items():
-    parent_id = experiments[experiment]['parent']
-    parent = experiments[parent_id]
-    if 'parent' not in parent:
-        entry['input_gff'] = parent['genome_annotations']
-        entry['input_fasta'] = results / experiment / parent['genome_sequence']
-    else:
-        entry['input_gff'] = results / parent_id / 'genome.gff'
-        entry['input_fasta'] = results / parent_id / 'genome.fasta'
-
-for experiment in to_build:
-    (results / experiment).mkdir(parents=True, exist_ok=True)
-
-# dependencies = {
-#     'ORIGINAL': {
-#         'final_gff': config['original_genome_annotations'],
-#         'final_fasta': config['original_genome_sequences'],
-#     }
-# }
-# for sample in to_build:
-#     sample_directory = pathlib.Path(config['samples_base_directory']) / sample
-#     dependencies[sample] = {
-#         'final_gff': results / sample / 'genome.gff',
-#         'final_fasta': results / sample / 'genome.fasta',
-#         'samples': set([fname.stem[:-5] for fname in sample_directory.glob('*.fq.gz')]),
-#     }
-# for sample in to_build:
-#     entry = dependencies[sample]
-#     parent = dependencies[dependency_tree[sample]]
-#     entry['input_gff'] = parent['final_gff']
-#     entry['input_fasta'] = parent['final_fasta']
-
-from pprint import pprint
-
-all_inputs = [results / experiment / "genome.gff" for experiment in to_build]
-print(all_inputs)
-
-fasta_lookup = {
-    str(results / experiment / sample): dependencies[experiment]['input_fasta'] for experiment in to_build for sample in dependencies[experiment]['samples']
-}
-
-
+# Default rule, requests the GFF files for all experiments in the tree
 rule all:
-    input: all_inputs
+    input: tree.all_inputs
 
-# rule download:
-#     output:
-#         gff="download-{suffix}.gff",
-#         fasta="download-{suffix}.fasta"
-#     shell: """
-#         curl {config[genome][url]} -o {output.gff}.unsplit
-#         csplit --suppress-matched -sf file -n 1 {output.gff}.unsplit /##FASTA/ '{{*}}'
-#         mv file0 {output.gff}
-#         mv file1 {output.fasta}
-#         rm {output.gff}.unsplit
-#     """
-
+# Download any genomes from TrypTag - this is relevant mostly for the reference genomes
 rule download_tryptrypdb_fasta:
     output:
         fasta="{path}/TriTrypDB-{version}_{organism}_Genome.fasta",
@@ -86,6 +15,7 @@ rule download_tryptrypdb_fasta:
         curl -o {output.fasta} "https://tritrypdb.org/common/downloads/release-{wildcards.version}/{wildcards.organism}/fasta/data/TriTrypDB-{wildcards.version}_{wildcards.organism}_Genome.fasta"
     """
 
+# Download sequencing samples from the SRA using sra-tools (any sample name starting with "SRR")
 rule download_sra:
     output:
         r1="{path}/SRR{sraid}_1.fq",
@@ -95,12 +25,15 @@ rule download_sra:
     conda: "envs/sratools.yaml"
     shell: """
         cd {wildcards.path}
-        prefetch -p SRR{wildcards.sraid}
+        # Prefetching followed by fasterq-dump is faster than fasterq-dump alone (not sure why?)
+        prefetch SRR{wildcards.sraid}
         fasterq-dump --split-files SRR{wildcards.sraid}
+        # Move to correct location
         mv SRR{wildcards.sraid}_1.fastq SRR{wildcards.sraid}_1.fq
         mv SRR{wildcards.sraid}_2.fastq SRR{wildcards.sraid}_2.fq
     """
 
+# Uncompresses gzipped fastq files
 rule uncompress:
     input: lambda wildcards: samples_directory / wildcards.experiment / f"{wildcards.sample_id}_{wildcards.runid}.fq.gz"
     output: temp("results/{experiment}/{sample_id}_{runid}.fq")
@@ -112,6 +45,7 @@ rule uncompress:
     gunzip < "{input}" > "{output}"
     """
 
+# Run rcorrector on the sequencing samples to correct spurious k-mers
 rule rcorrector:
     input:
         r1="results/{experiment}/{sample_id}_1.fq",
@@ -125,6 +59,7 @@ rule rcorrector:
     run_rcorrector.pl -t 8 -1 {input.r1} -2 {input.r2} -od results/{wildcards.experiment}/
     """
 
+# Filter out reads that rcorrector has marked as uncorrectable
 rule filter_rcorrector_reads:
     input:
         r1="results/{experiment}/{sample_id}_1.cor.fq",
@@ -186,6 +121,7 @@ rule filter_rcorrector_reads:
 
         print('total PE reads:%s\nremoved PE reads:%s\nretained PE reads:%s\nR1 corrected:%s\nR2 corrected:%s\npairs corrected:%s\nR1 unfixable:%s\nR2 unfixable:%s\nboth reads unfixable:%s\n' % (counter,total_unfixable,total_retained,r1_cor_count,r2_cor_count,pair_cor_count,unfix_r1_count,unfix_r2_count,unfix_both_count))
 
+# Run Trim Galore to trim adapter sequences
 rule trim_galore:
     input:
         r1="results/{experiment}/{sample_id}_1.filtered.fq",
@@ -199,6 +135,7 @@ rule trim_galore:
     trim_galore --paired --retain_unpaired --phred33 --length 36 -q 5 --stringency 1 -e 0.1 -j 8 --no_report_file --dont_gzip --output_dir 'results/{wildcards.experiment}' --basename '{wildcards.sample_id}' '{input.r1}' '{input.r2}'
     """
 
+# Index a fasta file containing a genome sequence (to align the reads to below)
 rule bwa_mem2_index:
     input:
         "{genome}",
@@ -213,11 +150,12 @@ rule bwa_mem2_index:
     wrapper:
         "v1.32.0/bio/bwa-mem2/index"
 
+# Align reads using BWA-MEM2
 rule bwa_mem2_mem:
     input:
         reads=["{sample_path}_val_1.fq", "{sample_path}_val_2.fq"],
         # Index can be a list of (all) files created by bwa, or one of them
-        idx=lambda wildcards: multiext(str(fasta_lookup[wildcards.sample_path]), ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
+        idx=lambda wildcards: multiext(str(tree.fasta_lookup[wildcards.sample_path]), ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
     output:
         temp("{sample_path}.bam"),
     log:
@@ -231,6 +169,7 @@ rule bwa_mem2_mem:
     wrapper:
         "v1.32.0/bio/bwa-mem2/mem"
 
+# Produce an index for the aligned reads
 rule samtools_index:
     input:
         "{sample}.bam",
@@ -244,11 +183,12 @@ rule samtools_index:
     wrapper:
         "v1.32.0/bio/samtools/index"
 
+# Run pilon to polish the parental genome and produce a corrected genome sequence with enumerated changes (allowing indels and snps)
 rule pilon_polish:
     input:
-        frags=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam', sample=dependencies[wildcards.experiment]['samples']),
-        frags_index=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam.bai', sample=dependencies[wildcards.experiment]['samples']),
-        genome=lambda wildcards: dependencies[wildcards.experiment]['input_fasta'],
+        frags=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam', sample=tree.dependencies[wildcards.experiment]['samples']),
+        frags_index=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam.bai', sample=tree.dependencies[wildcards.experiment]['samples']),
+        genome=lambda wildcards: tree.dependencies[wildcards.experiment]['input_fasta'],
     output:
         fasta=temp("results/{experiment}/genome.polish.fasta"),
         changes=temp("results/{experiment}/genome.polish.changes"),
@@ -258,14 +198,16 @@ rule pilon_polish:
     pilon -Xmx20G --genome {input.genome} --output results/{wildcards.experiment}/genome.polish --changes --fix snps,indels `for frag in {input.frags}; do echo -n "--frags $frag "; done;`
     """
 
+# Remove the annoying "_pilon" contig name suffix in the fasta file from the pilon run
 rule fasta_remove_pilon_suffix:
     input: "results/{experiment}/genome.polish.fasta",
     output: "results/{experiment}/genome.fasta",
     shell: "sed 's/_pilon//' {input} > {output}"
 
+# Shift genome features to their correct positions after the changes from the pilon run have been taken into account
 rule coordinate_shifts:
     input:
-        gff=lambda wildcards: dependencies[wildcards.experiment]['input_gff'],
+        gff=lambda wildcards: tree.dependencies[wildcards.experiment]['input_gff'],
         changes="results/{experiment}/genome.polish.changes",
         fasta="results/{experiment}/genome.fasta",
     output:
