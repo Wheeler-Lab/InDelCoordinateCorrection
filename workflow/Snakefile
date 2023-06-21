@@ -1,4 +1,274 @@
-# Main entrypoint of the workflow. 
-# Please follow the best practices: 
-# https://snakemake.readthedocs.io/en/stable/snakefiles/best_practices.html,
-# in particular regarding the standardized folder structure mentioned there. 
+# parental_prefix = config['parental_genome']
+# genome_prefix = config['experiment_id']
+
+# import pathlib
+# import os
+# sample_directory = pathlib.Path(f"../../resources/samples/Parental_Cloning_Experiment/{genome_prefix}")
+# sample_ids = set([fname.stem[:-5] for fname in sample_directory.glob('*.fq.gz')] + [fname.stem[:-2] for fname in sample_directory.glob('*.fq')])
+# print(sample_ids)
+
+import pathlib
+
+samples_directory = pathlib.Path(config['samples_directory'])
+results = pathlib.Path('results')
+
+experiments = config['experiments']
+to_build = [k for k, v in experiments.items() if 'parent' in v]
+print(to_build)
+
+dependencies = {
+    experiment: {
+        "samples": experiments[experiment]['samples']
+    }
+    for experiment in to_build
+}
+for experiment, entry in dependencies.items():
+    parent_id = experiments[experiment]['parent']
+    parent = experiments[parent_id]
+    if 'parent' not in parent:
+        entry['input_gff'] = parent['genome_annotations']
+        entry['input_fasta'] = results / experiment / parent['genome_sequence']
+    else:
+        entry['input_gff'] = results / parent_id / 'genome.gff'
+        entry['input_fasta'] = results / parent_id / 'genome.fasta'
+
+for experiment in to_build:
+    (results / experiment).mkdir(parents=True, exist_ok=True)
+
+# dependencies = {
+#     'ORIGINAL': {
+#         'final_gff': config['original_genome_annotations'],
+#         'final_fasta': config['original_genome_sequences'],
+#     }
+# }
+# for sample in to_build:
+#     sample_directory = pathlib.Path(config['samples_base_directory']) / sample
+#     dependencies[sample] = {
+#         'final_gff': results / sample / 'genome.gff',
+#         'final_fasta': results / sample / 'genome.fasta',
+#         'samples': set([fname.stem[:-5] for fname in sample_directory.glob('*.fq.gz')]),
+#     }
+# for sample in to_build:
+#     entry = dependencies[sample]
+#     parent = dependencies[dependency_tree[sample]]
+#     entry['input_gff'] = parent['final_gff']
+#     entry['input_fasta'] = parent['final_fasta']
+
+from pprint import pprint
+
+all_inputs = [results / experiment / "genome.gff" for experiment in to_build]
+print(all_inputs)
+
+fasta_lookup = {
+    str(results / experiment / sample): dependencies[experiment]['input_fasta'] for experiment in to_build for sample in dependencies[experiment]['samples']
+}
+
+
+rule all:
+    input: all_inputs
+
+# rule download:
+#     output:
+#         gff="download-{suffix}.gff",
+#         fasta="download-{suffix}.fasta"
+#     shell: """
+#         curl {config[genome][url]} -o {output.gff}.unsplit
+#         csplit --suppress-matched -sf file -n 1 {output.gff}.unsplit /##FASTA/ '{{*}}'
+#         mv file0 {output.gff}
+#         mv file1 {output.fasta}
+#         rm {output.gff}.unsplit
+#     """
+
+rule download_tryptrypdb_fasta:
+    output:
+        fasta="{path}/TriTrypDB-{version}_{organism}_Genome.fasta",
+    shell: """
+        curl -o {output.fasta} "https://tritrypdb.org/common/downloads/release-{wildcards.version}/{wildcards.organism}/fasta/data/TriTrypDB-{wildcards.version}_{wildcards.organism}_Genome.fasta"
+    """
+
+rule download_sra:
+    output:
+        r1="{path}/SRR{sraid}_1.fq",
+        r2="{path}/SRR{sraid}_2.fq",
+    wildcard_constraints:
+        sraid="[0-9]+",
+    conda: "envs/sratools.yaml"
+    shell: """
+        cd {wildcards.path}
+        prefetch -p SRR{wildcards.sraid}
+        fasterq-dump --split-files SRR{wildcards.sraid}
+        mv SRR{wildcards.sraid}_1.fastq SRR{wildcards.sraid}_1.fq
+        mv SRR{wildcards.sraid}_2.fastq SRR{wildcards.sraid}_2.fq
+    """
+
+rule uncompress:
+    input: lambda wildcards: samples_directory / wildcards.experiment / f"{wildcards.sample_id}_{wildcards.runid}.fq.gz"
+    output: temp("results/{experiment}/{sample_id}_{runid}.fq")
+    wildcard_constraints:
+        runid="[12]",
+    resources:
+        uncompress=1
+    shell: """
+    gunzip < "{input}" > "{output}"
+    """
+
+rule rcorrector:
+    input:
+        r1="results/{experiment}/{sample_id}_1.fq",
+        r2="results/{experiment}/{sample_id}_2.fq",
+    output:
+        r1=temp("results/{experiment}/{sample_id}_1.cor.fq"),
+        r2=temp("results/{experiment}/{sample_id}_2.cor.fq"),
+    conda: "envs/rcorrector.yaml"
+    threads: 8
+    shell: """
+    run_rcorrector.pl -t 8 -1 {input.r1} -2 {input.r2} -od results/{wildcards.experiment}/
+    """
+
+rule filter_rcorrector_reads:
+    input:
+        r1="results/{experiment}/{sample_id}_1.cor.fq",
+        r2="results/{experiment}/{sample_id}_2.cor.fq",
+    output:
+        r1=temp("results/{experiment}/{sample_id}_1.filtered.fq"),
+        r2=temp("results/{experiment}/{sample_id}_2.filtered.fq"),
+    threads: 1
+    run:
+        from itertools import zip_longest
+        def grouper(iterable, n, fillvalue=None):
+            "Collect data into fixed-length chunks or blocks"
+            # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx
+            args = [iter(iterable)] * n
+            return zip_longest(fillvalue=fillvalue, *args)
+
+        r1_cor_count=0
+        r2_cor_count=0
+        pair_cor_count=0
+        unfix_r1_count=0
+        unfix_r2_count=0
+        unfix_both_count=0   
+
+        with \
+            open(input.r1, 'r') as r1_in,\
+            open(input.r2, 'r') as r2_in,\
+            open(output.r1, 'w') as r1_out,\
+            open(output.r2, 'w') as r2_out:
+            R1=grouper(r1_in,4)
+            R2=grouper(r2_in,4)
+            counter=0
+            for entry in R1:
+                counter+=1
+                if counter%100000==0:
+                    print("%s reads processed" % counter)
+            
+                head1,seq1,placeholder1,qual1=[i.strip() for i in entry]
+                head2,seq2,placeholder2,qual2=[j.strip() for j in next(R2)]
+                
+                if 'unfixable' in head1 and 'unfixable' not in head2:
+                    unfix_r1_count+=1
+                elif 'unfixable' in head2 and 'unfixable' not in head1:
+                    unfix_r2_count+=1
+                elif 'unfixable' in head1 and 'unfixable' in head2:
+                    unfix_both_count+=1
+                else:
+                    if 'cor' in head1:
+                        r1_cor_count+=1
+                    if 'cor' in head2:
+                        r2_cor_count+=1
+                    if 'cor' in head1 or 'cor' in head2:
+                        pair_cor_count+=1
+                    
+                    r1_out.write('%s\n' % '\n'.join([head1,seq1,placeholder1,qual1]))
+                    r2_out.write('%s\n' % '\n'.join([head2,seq2,placeholder2,qual2]))
+        
+        total_unfixable = unfix_r1_count+unfix_r2_count+unfix_both_count
+        total_retained = counter - total_unfixable
+
+        print('total PE reads:%s\nremoved PE reads:%s\nretained PE reads:%s\nR1 corrected:%s\nR2 corrected:%s\npairs corrected:%s\nR1 unfixable:%s\nR2 unfixable:%s\nboth reads unfixable:%s\n' % (counter,total_unfixable,total_retained,r1_cor_count,r2_cor_count,pair_cor_count,unfix_r1_count,unfix_r2_count,unfix_both_count))
+
+rule trim_galore:
+    input:
+        r1="results/{experiment}/{sample_id}_1.filtered.fq",
+        r2="results/{experiment}/{sample_id}_2.filtered.fq",
+    output:
+        r1=temp("results/{experiment}/{sample_id}_val_1.fq"),
+        r2=temp("results/{experiment}/{sample_id}_val_2.fq"),
+    conda: "envs/trimgalore.yaml"
+    threads: 8
+    shell: """
+    trim_galore --paired --retain_unpaired --phred33 --length 36 -q 5 --stringency 1 -e 0.1 -j 8 --no_report_file --dont_gzip --output_dir 'results/{wildcards.experiment}' --basename '{wildcards.sample_id}' '{input.r1}' '{input.r2}'
+    """
+
+rule bwa_mem2_index:
+    input:
+        "{genome}",
+    output:
+        temp("{genome}.0123"),
+        temp("{genome}.amb"),
+        temp("{genome}.ann"),
+        temp("{genome}.bwt.2bit.64"),
+        temp("{genome}.pac"),
+    log:
+        "logs/bwa-mem2_index/{genome}.log",
+    wrapper:
+        "v1.32.0/bio/bwa-mem2/index"
+
+rule bwa_mem2_mem:
+    input:
+        reads=["{sample_path}_val_1.fq", "{sample_path}_val_2.fq"],
+        # Index can be a list of (all) files created by bwa, or one of them
+        idx=lambda wildcards: multiext(str(fasta_lookup[wildcards.sample_path]), ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"),
+    output:
+        temp("{sample_path}.bam"),
+    log:
+        "logs/bwa_mem2/{sample_path}.log",
+    params:
+        extra=r"-R '@RG\tID:{sample_path}\tSM:{sample_path}'",
+        sort="samtools",  # Can be 'none', 'samtools' or 'picard'.
+        sort_order="coordinate",  # Can be 'coordinate' (default) or 'queryname'.
+        sort_extra="-m 4G",  # Extra args for samtools/picard.
+    threads: 8
+    wrapper:
+        "v1.32.0/bio/bwa-mem2/mem"
+
+rule samtools_index:
+    input:
+        "{sample}.bam",
+    output:
+        temp("{sample}.bam.bai"),
+    log:
+        "logs/samtools_index/{sample}.log",
+    params:
+        extra="",  # optional params string
+    threads: 4  # This value - 1 will be sent to -@
+    wrapper:
+        "v1.32.0/bio/samtools/index"
+
+rule pilon_polish:
+    input:
+        frags=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam', sample=dependencies[wildcards.experiment]['samples']),
+        frags_index=lambda wildcards: expand(f'results/{wildcards.experiment}/{{sample}}.bam.bai', sample=dependencies[wildcards.experiment]['samples']),
+        genome=lambda wildcards: dependencies[wildcards.experiment]['input_fasta'],
+    output:
+        fasta=temp("results/{experiment}/genome.polish.fasta"),
+        changes=temp("results/{experiment}/genome.polish.changes"),
+    threads: 8
+    conda: "envs/pilon.yaml"
+    shell: """
+    pilon -Xmx20G --genome {input.genome} --output results/{wildcards.experiment}/genome.polish --changes --fix snps,indels `for frag in {input.frags}; do echo -n "--frags $frag "; done;`
+    """
+
+rule fasta_remove_pilon_suffix:
+    input: "results/{experiment}/genome.polish.fasta",
+    output: "results/{experiment}/genome.fasta",
+    shell: "sed 's/_pilon//' {input} > {output}"
+
+rule coordinate_shifts:
+    input:
+        gff=lambda wildcards: dependencies[wildcards.experiment]['input_gff'],
+        changes="results/{experiment}/genome.polish.changes",
+        fasta="results/{experiment}/genome.fasta",
+    output:
+        gff="results/{experiment}/genome.gff",
+    conda: "envs/shift_gff_coordinates.yaml"
+    script: "scripts/shift_gff_coordinates.py"

@@ -1,0 +1,5 @@
+name: pilon
+channels:
+  - bioconda
+dependencies:
+  - pilon

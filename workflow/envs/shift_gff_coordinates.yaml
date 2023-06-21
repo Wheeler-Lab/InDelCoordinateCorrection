@@ -1,0 +1,5 @@
+name: shift_gff_coordinates
+dependencies:
+  - pandas
+  - pip:
+    - git+https://github.com/ulido/geffa

@@ -1,0 +1,51 @@
+samples_directory: resources/samples
+experiments:
+  reference:
+    genome_sequence: TriTrypDB-50_LmexicanaMHOMGT2001U1103_Genome.fasta
+    genome_annotations: resources/Fiebig.gff
+
+  C9T7:
+    parent: reference
+    samples:
+      - SRR21208582
+
+  parental:
+    parent: C9T7
+    samples:
+      - V350133908_L03_B5GLEImsweRAAAA-573
+      - V350150402_L04_B5GLEImsweRAAAA-573
+
+  clone1:
+    parent: parental
+    samples:
+      - V350133908_L03_B5GLEImsweRAABA-574
+      - V350150402_L04_B5GLEImsweRAABA-574
+
+  clone2:
+    parent: parental
+    samples:
+      - V350133908_L03_B5GLEImsweRAAEA-577
+      - V350150402_L04_B5GLEImsweRAAEA-577
+
+  clone1_subclone1:
+    parent: clone1
+    samples:
+      - V350133908_L03_B5GLEImsweRAAFA-578
+      - V350150402_L04_B5GLEImsweRAAFA-578
+  
+  clone1_subclone2:
+    parent: clone1
+    samples:
+      - V350150402_L04_B5GLEImsweRAACA-575
+
+  clone2_subclone1:
+    parent: clone2
+    samples:
+      - V350133908_L03_B5GLEImsweRAADA-576
+      - V350150402_L04_B5GLEImsweRAADA-576
+  
+  clone2_subclone2:
+    parent: clone2
+    samples:
+      - V350133908_L03_B5GLEImsweRAAGA-579
+      - V350150402_L04_B5GLEImsweRAAGA-579
