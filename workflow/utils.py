@@ -6,6 +6,8 @@ class ExperimentTree:
     def __init__(self, config):
         # Results path
         self.results = pathlib.Path('results')
+        # Samples directory
+        self.samples_directory = pathlib.Path(config['samples_directory'])
         # Experiments specification in the configuration
         self.experiments: dict = config['experiments']
         # Experiments to build (everything that has a parent)

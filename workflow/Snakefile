@@ -1,3 +1,5 @@
+configfile: "config/config.yaml"
+
 from utils import ExperimentTree
 
 # Digest the config and produce the dependency tree of all experiments
@@ -18,8 +20,9 @@ rule download_tryptrypdb_fasta:
 # Download sequencing samples from the SRA using sra-tools (any sample name starting with "SRR")
 rule download_sra:
     output:
-        r1="{path}/SRR{sraid}_1.fq",
-        r2="{path}/SRR{sraid}_2.fq",
+        r1=temp("{path}/SRR{sraid}_1.fq"),
+        r2=temp("{path}/SRR{sraid}_2.fq"),
+        store=temp(directory("{path}/SRR{sraid}")),
     wildcard_constraints:
         sraid="[0-9]+",
     conda: "envs/sratools.yaml"
@@ -35,7 +38,7 @@ rule download_sra:
 
 # Uncompresses gzipped fastq files
 rule uncompress:
-    input: lambda wildcards: samples_directory / wildcards.experiment / f"{wildcards.sample_id}_{wildcards.runid}.fq.gz"
+    input: lambda wildcards: tree.samples_directory / wildcards.experiment / f"{wildcards.sample_id}_{wildcards.runid}.fq.gz"
     output: temp("results/{experiment}/{sample_id}_{runid}.fq")
     wildcard_constraints:
         runid="[12]",
@@ -54,9 +57,9 @@ rule rcorrector:
         r1=temp("results/{experiment}/{sample_id}_1.cor.fq"),
         r2=temp("results/{experiment}/{sample_id}_2.cor.fq"),
     conda: "envs/rcorrector.yaml"
-    threads: 8
+    threads: 24
     shell: """
-    run_rcorrector.pl -t 8 -1 {input.r1} -2 {input.r2} -od results/{wildcards.experiment}/
+    run_rcorrector.pl -t 24 -1 {input.r1} -2 {input.r2} -od results/{wildcards.experiment}/
     """
 
 # Filter out reads that rcorrector has marked as uncorrectable
@@ -132,7 +135,7 @@ rule trim_galore:
     conda: "envs/trimgalore.yaml"
     threads: 8
     shell: """
-    trim_galore --paired --retain_unpaired --phred33 --length 36 -q 5 --stringency 1 -e 0.1 -j 8 --no_report_file --dont_gzip --output_dir 'results/{wildcards.experiment}' --basename '{wildcards.sample_id}' '{input.r1}' '{input.r2}'
+    trim_galore --paired --phred33 --length 36 -q 5 --stringency 1 -e 0.1 -j 8 --no_report_file --dont_gzip --output_dir 'results/{wildcards.experiment}' --basename '{wildcards.sample_id}' '{input.r1}' '{input.r2}'
     """
 
 # Index a fasta file containing a genome sequence (to align the reads to below)
