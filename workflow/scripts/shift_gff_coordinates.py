@@ -88,7 +88,7 @@ translations:Dict[str, PieceWiseConstantShift] = {
 # TODO: Validate - mark incomplete CDS as pseudogenes!!!
 
 # Load the parental GFF file and the new sequence fasta file
-gff = geffa.GffFile(snakemake.input.gff, fasta_file=snakemake.input.fasta)
+gff = geffa.GffFile(snakemake.input.gff, fasta_file=snakemake.input.fasta, ignore_unknown_feature_types=True)
 for seqreg in gff.sequence_regions.values():
     # Iterate over contigs
     try:
