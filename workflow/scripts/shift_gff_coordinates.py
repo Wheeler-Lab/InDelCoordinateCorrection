@@ -118,6 +118,8 @@ for seqreg in gff.sequence_regions.values():
             if ("SLAS feature needs to be of length 2" in msg) or ("__len__() should return >= 0" in msg):
                 print("Deleting this feature because it's been destroyed by an indel.")
                 marked_for_deletion.append(feature)
+            elif "Exon parent needs to be an RNA" in msg:
+                print("Invalid exon found - skipping because it's not that severe.")
             else:
                 # Fail otherwise, don't know what to do.
                 print(list(zip(trans.coordinates, trans.shifts, trans.cumshifts)))
