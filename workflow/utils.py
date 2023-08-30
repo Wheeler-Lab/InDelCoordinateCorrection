@@ -33,7 +33,7 @@ class ExperimentTree:
             parent = self.experiments[parent_id]
             if 'parent' not in parent:
                 entry['input_gff'] = parent['genome_annotations']
-                entry['input_fasta'] = self.results / experiment / parent['genome_sequence']
+                entry['input_fasta'] = parent['genome_sequence']
             else:
                 entry['input_gff'] = self.results / parent_id / 'genome.gff'
                 entry['input_fasta'] = self.results / parent_id / 'genome.fasta'
